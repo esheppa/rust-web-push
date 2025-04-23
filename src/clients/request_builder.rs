@@ -2,8 +2,8 @@
 //! This module can be used to build custom clients.
 
 use http::{
-    header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE},
     Request, StatusCode,
+    header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE},
 };
 
 use crate::{
@@ -100,8 +100,8 @@ mod tests {
     use http::Uri;
 
     use crate::{
-        clients::request_builder::*, error::WebPushError, http_ece::ContentEncoding, message::WebPushMessageBuilder,
-        Urgency,
+        Urgency, clients::request_builder::*, error::WebPushError, http_ece::ContentEncoding,
+        message::WebPushMessageBuilder,
     };
 
     #[cfg(feature = "isahc-client")]

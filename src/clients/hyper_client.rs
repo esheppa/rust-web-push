@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use http::header::RETRY_AFTER;
-use hyper::{body::HttpBody, client::HttpConnector, Body, Client, Request as HttpRequest};
+use hyper::{Body, Client, Request as HttpRequest, body::HttpBody, client::HttpConnector};
 use hyper_tls::HttpsConnector;
+use tracing::{debug, trace};
 
 use crate::{
-    clients::{request_builder, WebPushClient, MAX_RESPONSE_SIZE},
+    clients::{MAX_RESPONSE_SIZE, WebPushClient, request_builder},
     error::{RetryAfter, WebPushError},
     message::WebPushMessage,
 };

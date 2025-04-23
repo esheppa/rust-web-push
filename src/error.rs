@@ -8,6 +8,7 @@ use std::{
 };
 
 use http::uri::InvalidUri;
+use serde::{Deserialize, Serialize};
 use serde_json::error::Error as JsonError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

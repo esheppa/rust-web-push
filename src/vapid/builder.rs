@@ -1,13 +1,9 @@
-use std::{collections::BTreeMap, io::Read};
+use std::io::Read;
 
-use ct_codecs::Base64UrlSafeNoPadding;
+use base64ct::{Base64UrlUnpadded, Encoding};
 use http::uri::Uri;
-use jwt_simple::prelude::*;
-use pem_rfc7468::PemLabel;
-use sec1::{
-    EcPrivateKey,
-    der::{Decode, SecretDocument},
-};
+use p256::ecdsa;
+use sec1::{DecodeEcPrivateKey, pkcs8::DecodePrivateKey};
 use serde_json::Value;
 
 use crate::{
@@ -124,9 +120,8 @@ impl<'a> VapidSignatureBuilder<'a> {
         let mut der_key: Vec<u8> = Vec::new();
         pk_der.read_to_end(&mut der_key)?;
 
-        let k = EcPrivateKey::try_from(der_key.as_slice()).map_err(|_| WebPushError::InvalidCryptoKeys)?;
         Ok(Self::from_ec(
-            ES256KeyPair::from_bytes(k.private_key).map_err(|_| WebPushError::InvalidCryptoKeys)?,
+            ecdsa::SigningKey::from_sec1_der(&der_key).map_err(|_| WebPushError::InvalidCryptoKeys)?,
             subscription_info,
         ))
     }
@@ -136,10 +131,11 @@ impl<'a> VapidSignatureBuilder<'a> {
     pub fn from_der_no_sub<R: Read>(mut pk_der: R) -> Result<PartialVapidSignatureBuilder, WebPushError> {
         let mut der_key: Vec<u8> = Vec::new();
         pk_der.read_to_end(&mut der_key)?;
-        let k = EcPrivateKey::try_from(der_key.as_slice()).map_err(|_| WebPushError::InvalidCryptoKeys)?;
 
         Ok(PartialVapidSignatureBuilder {
-            key: VapidKey::new(ES256KeyPair::from_bytes(k.private_key).map_err(|_| WebPushError::InvalidCryptoKeys)?),
+            key: VapidKey::new(
+                ecdsa::SigningKey::from_sec1_der(&der_key).map_err(|_| WebPushError::InvalidCryptoKeys)?,
+            ),
         })
     }
 
@@ -161,8 +157,8 @@ impl<'a> VapidSignatureBuilder<'a> {
         encoded: &str,
         subscription_info: &'a SubscriptionInfo,
     ) -> Result<VapidSignatureBuilder<'a>, WebPushError> {
-        let pr_key = ES256KeyPair::from_bytes(
-            &Base64UrlSafeNoPadding::decode_to_vec(encoded, None).map_err(|_| WebPushError::InvalidCryptoKeys)?,
+        let pr_key = ecdsa::SigningKey::from_slice(
+            &Base64UrlUnpadded::decode_vec(encoded).map_err(|_| WebPushError::InvalidCryptoKeys)?,
         )
         .map_err(|_| WebPushError::InvalidCryptoKeys)?;
 
@@ -175,8 +171,8 @@ impl<'a> VapidSignatureBuilder<'a> {
     /// Base64 encoding must use URL-safe alphabet without padding.
     ///
     pub fn from_base64_no_sub(encoded: &str) -> Result<PartialVapidSignatureBuilder, WebPushError> {
-        let pr_key = ES256KeyPair::from_bytes(
-            &Base64UrlSafeNoPadding::decode_to_vec(encoded, None).map_err(|_| WebPushError::InvalidCryptoKeys)?,
+        let pr_key = ecdsa::SigningKey::from_slice(
+            &Base64UrlUnpadded::decode_vec(encoded).map_err(|_| WebPushError::InvalidCryptoKeys)?,
         )
         .map_err(|_| WebPushError::InvalidCryptoKeys)?;
 
@@ -195,7 +191,16 @@ impl<'a> VapidSignatureBuilder<'a> {
     where
         V: Into<Value>,
     {
-        self.claims.custom.insert(key.to_string(), val.into());
+        let val: Value = val.into();
+
+        match val {
+            Value::Number(number) if number.is_u64() && key == "exp" => self.claims.set_exp(number.as_u64().unwrap()),
+            Value::String(s) if key == "aud" => self.claims.set_audience(s),
+            Value::String(s) if key == "sub" => self.claims.set_sub(s),
+            _ => {
+                self.claims.custom.insert(key.to_string(), val.into());
+            }
+        }
     }
 
     /// Builds a signature to be used in [WebPushMessageBuilder](struct.WebPushMessageBuilder.html).
@@ -206,16 +211,16 @@ impl<'a> VapidSignatureBuilder<'a> {
         Ok(signature)
     }
 
-    fn from_ec(ec_key: ES256KeyPair, subscription_info: &'a SubscriptionInfo) -> VapidSignatureBuilder<'a> {
+    fn from_ec(ec_key: ecdsa::SigningKey, subscription_info: &'a SubscriptionInfo) -> VapidSignatureBuilder<'a> {
         VapidSignatureBuilder {
-            claims: jwt_simple::prelude::Claims::with_custom_claims(BTreeMap::new(), Duration::from_hours(12)),
+            claims: Claims::now(),
             key: VapidKey::new(ec_key),
             subscription_info,
         }
     }
 
     /// Reads the pem file as either format sec1 or pkcs8, then returns the decoded private key.
-    pub(crate) fn read_pem<R: Read>(mut input: R) -> Result<ES256KeyPair, WebPushError> {
+    pub(crate) fn read_pem<R: Read>(mut input: R) -> Result<ecdsa::SigningKey, WebPushError> {
         let mut buffer = String::new();
         input.read_to_string(&mut buffer)?;
 
@@ -225,16 +230,16 @@ impl<'a> VapidSignatureBuilder<'a> {
         //Handle each kind of PEM file differently, as EC keys can be in SEC1 or PKCS8 format.
         if label == "EC PRIVATE KEY" {
             // vendored from https://docs.rs/sec1/latest/src/sec1/traits.rs.html#36-41
-            let (label, doc) = SecretDocument::from_pem(&buffer).map_err(|_| WebPushError::InvalidCryptoKeys)?;
+            // let (label, doc) = SecretDocument::from_pem(&buffer).map_err(|_| WebPushError::InvalidCryptoKeys)?;
 
-            if label != EcPrivateKey::PEM_LABEL {
-                return Err(WebPushError::InvalidCryptoKeys);
-            }
+            // if label != EcPrivateKey::PEM_LABEL {
+            //     return Err(WebPushError::InvalidCryptoKeys);
+            // }
 
-            let sec1 = EcPrivateKey::from_der(doc.as_bytes()).map_err(|_| WebPushError::InvalidCryptoKeys)?;
-            Ok(ES256KeyPair::from_bytes(sec1.private_key).map_err(|_| WebPushError::InvalidCryptoKeys)?)
+            // let sec1 = EcPrivateKey::from_der(doc.as_bytes()).map_err(|_| WebPushError::InvalidCryptoKeys)?;
+            Ok(ecdsa::SigningKey::from_sec1_pem(&buffer).map_err(|_| WebPushError::InvalidCryptoKeys)?)
         } else if label == "PRIVATE KEY" {
-            Ok(ES256KeyPair::from_pem(&buffer).map_err(|_| WebPushError::InvalidCryptoKeys)?)
+            Ok(ecdsa::SigningKey::from_pkcs8_pem(&buffer).map_err(|_| WebPushError::InvalidCryptoKeys)?)
         } else {
             Err(WebPushError::MissingCryptoKeys)
         }
@@ -274,8 +279,8 @@ impl PartialVapidSignatureBuilder {
     /// Adds the VAPID subscription info for a particular client.
     pub fn add_sub_info(self, subscription_info: &SubscriptionInfo) -> VapidSignatureBuilder<'_> {
         VapidSignatureBuilder {
+            claims: Claims::now(),
             key: self.key,
-            claims: jwt_simple::prelude::Claims::with_custom_claims(BTreeMap::new(), Duration::from_hours(12)),
             subscription_info,
         }
     }
@@ -290,7 +295,8 @@ impl PartialVapidSignatureBuilder {
 
 #[cfg(test)]
 mod tests {
-    use ct_codecs::{Base64UrlSafeNoPadding, Encoder};
+
+    use base64ct::{Base64UrlUnpadded, Encoding};
 
     use crate::{message::SubscriptionInfo, vapid::VapidSignatureBuilder};
 
@@ -318,7 +324,7 @@ mod tests {
 
         assert_eq!(
             "BMo1HqKF6skMZYykrte9duqYwBD08mDQKTunRkJdD3sTJ9E-yyN6sJlPWTpKNhp-y2KeS6oANHF-q3w37bClb7U",
-            Base64UrlSafeNoPadding::encode_to_string(&signature.auth_k).unwrap()
+            Base64UrlUnpadded::encode_string(&signature.auth_k)
         );
 
         assert!(!signature.auth_t.is_empty());
@@ -332,7 +338,7 @@ mod tests {
 
         assert_eq!(
             "BMo1HqKF6skMZYykrte9duqYwBD08mDQKTunRkJdD3sTJ9E-yyN6sJlPWTpKNhp-y2KeS6oANHF-q3w37bClb7U",
-            Base64UrlSafeNoPadding::encode_to_string(&signature.auth_k).unwrap()
+            Base64UrlUnpadded::encode_string(&signature.auth_k)
         );
 
         assert!(!signature.auth_t.is_empty());
@@ -346,7 +352,7 @@ mod tests {
 
         assert_eq!(
             "BMjQIp55pdbU8pfCBKyXcZjlmER_mXt5LqNrN1hrXbdBS5EnhIbMu3Au-RV53iIpztzNXkGI56BFB1udQ8Bq_H4",
-            Base64UrlSafeNoPadding::encode_to_string(&signature.auth_k).unwrap()
+            Base64UrlUnpadded::encode_string(&signature.auth_k)
         );
 
         assert!(!signature.auth_t.is_empty());

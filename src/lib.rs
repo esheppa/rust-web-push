@@ -43,21 +43,16 @@
 //! # }
 //! ```
 
-#[macro_use]
-extern crate log;
-#[macro_use]
-extern crate serde_derive;
-
 #[cfg(feature = "hyper-client")]
 pub use crate::clients::hyper_client::HyperWebPushClient;
 #[cfg(feature = "isahc-client")]
 pub use crate::clients::isahc_client::IsahcWebPushClient;
 pub use crate::{
-    clients::{request_builder, WebPushClient},
+    clients::{WebPushClient, request_builder},
     error::WebPushError,
     http_ece::ContentEncoding,
     message::{SubscriptionInfo, SubscriptionKeys, Urgency, WebPushMessage, WebPushMessageBuilder, WebPushPayload},
-    vapid::{builder::PartialVapidSignatureBuilder, VapidSignature, VapidSignatureBuilder},
+    vapid::{VapidSignature, VapidSignatureBuilder, builder::PartialVapidSignatureBuilder},
 };
 
 mod clients;

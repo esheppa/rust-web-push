@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use futures_lite::AsyncReadExt;
 use http::header::RETRY_AFTER;
 use isahc::HttpClient;
+use tracing::trace;
 
 use crate::{
-    clients::{request_builder, WebPushClient, MAX_RESPONSE_SIZE},
+    clients::{MAX_RESPONSE_SIZE, WebPushClient, request_builder},
     error::{RetryAfter, WebPushError},
     message::WebPushMessage,
 };
