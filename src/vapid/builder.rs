@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, io::Read};
 use ct_codecs::Base64UrlSafeNoPadding;
 use http::uri::Uri;
 use jwt_simple::prelude::*;
+use sec1::{der::EncodePem, EcPrivateKey};
 use serde_json::Value;
 
 use crate::{
@@ -120,10 +121,10 @@ impl<'a> VapidSignatureBuilder<'a> {
         pk_der.read_to_end(&mut der_key)?;
 
         Ok(Self::from_ec(
-            ES256KeyPair::from_bytes(
-                &sec1_decode::parse_der(&der_key)
+            ES256KeyPair::from_pem(
+                &EcPrivateKey::try_from(der_key.as_slice())
                     .map_err(|_| WebPushError::InvalidCryptoKeys)?
-                    .key,
+                    .to_pem(sec1::LineEnding::CRLF).map_err(|_| WebPushError::InvalidCryptoKeys)?,
             )
             .map_err(|_| WebPushError::InvalidCryptoKeys)?,
             subscription_info,
@@ -138,10 +139,10 @@ impl<'a> VapidSignatureBuilder<'a> {
 
         Ok(PartialVapidSignatureBuilder {
             key: VapidKey::new(
-                ES256KeyPair::from_bytes(
-                    &sec1_decode::parse_der(&der_key)
+                ES256KeyPair::from_pem(
+                    &EcPrivateKey::try_from(der_key.as_slice())
                         .map_err(|_| WebPushError::InvalidCryptoKeys)?
-                        .key,
+                        .to_pem(sec1::LineEnding::CRLF).map_err(|_| WebPushError::InvalidCryptoKeys)?,
                 )
                 .map_err(|_| WebPushError::InvalidCryptoKeys)?,
             ),
@@ -225,16 +226,16 @@ impl<'a> VapidSignatureBuilder<'a> {
         input.read_to_string(&mut buffer)?;
 
         //Parse many PEM in the assumption of extra unneeded sections.
-        let parsed = pem::parse_many(&buffer).map_err(|_| WebPushError::InvalidCryptoKeys)?;
-
-        let found_pkcs8 = parsed.iter().any(|pem| pem.tag() == "PRIVATE KEY");
-        let found_sec1 = parsed.iter().any(|pem| pem.tag() == "EC PRIVATE KEY");
+        let (label, _) = pem_rfc7468::decode_vec(buffer.as_bytes()).map_err(|_| WebPushError::InvalidCryptoKeys)?;
 
         //Handle each kind of PEM file differently, as EC keys can be in SEC1 or PKCS8 format.
-        if found_sec1 {
-            let key = sec1_decode::parse_pem(buffer.as_bytes()).map_err(|_| WebPushError::InvalidCryptoKeys)?;
-            Ok(ES256KeyPair::from_bytes(&key.key).map_err(|_| WebPushError::InvalidCryptoKeys)?)
-        } else if found_pkcs8 {
+        if label == "EC PRIVATE KEY" {
+            let key = EcPrivateKey::try_from(buffer.as_bytes())
+                .map_err(|_| WebPushError::InvalidCryptoKeys)?
+                .to_pem(sec1::LineEnding::CRLF)
+                .map_err(|_| WebPushError::InvalidCryptoKeys)?;
+            Ok(ES256KeyPair::from_pem(&key).map_err(|_| WebPushError::InvalidCryptoKeys)?)
+        } else if label == "PRIVATE KEY" {
             Ok(ES256KeyPair::from_pem(&buffer).map_err(|_| WebPushError::InvalidCryptoKeys)?)
         } else {
             Err(WebPushError::MissingCryptoKeys)
