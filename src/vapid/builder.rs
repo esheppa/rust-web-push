@@ -3,13 +3,17 @@ use std::{collections::BTreeMap, io::Read};
 use ct_codecs::Base64UrlSafeNoPadding;
 use http::uri::Uri;
 use jwt_simple::prelude::*;
-use sec1::{der::EncodePem, EcPrivateKey};
+use pem_rfc7468::PemLabel;
+use sec1::{
+    EcPrivateKey,
+    der::{Decode, SecretDocument},
+};
 use serde_json::Value;
 
 use crate::{
     error::WebPushError,
     message::SubscriptionInfo,
-    vapid::{signer::Claims, VapidKey, VapidSignature, VapidSigner},
+    vapid::{VapidKey, VapidSignature, VapidSigner, signer::Claims},
 };
 
 /// A VAPID signature builder for generating an optional signature to the
@@ -120,13 +124,9 @@ impl<'a> VapidSignatureBuilder<'a> {
         let mut der_key: Vec<u8> = Vec::new();
         pk_der.read_to_end(&mut der_key)?;
 
+        let k = EcPrivateKey::try_from(der_key.as_slice()).map_err(|_| WebPushError::InvalidCryptoKeys)?;
         Ok(Self::from_ec(
-            ES256KeyPair::from_pem(
-                &EcPrivateKey::try_from(der_key.as_slice())
-                    .map_err(|_| WebPushError::InvalidCryptoKeys)?
-                    .to_pem(sec1::LineEnding::CRLF).map_err(|_| WebPushError::InvalidCryptoKeys)?,
-            )
-            .map_err(|_| WebPushError::InvalidCryptoKeys)?,
+            ES256KeyPair::from_bytes(k.private_key).map_err(|_| WebPushError::InvalidCryptoKeys)?,
             subscription_info,
         ))
     }
@@ -136,16 +136,10 @@ impl<'a> VapidSignatureBuilder<'a> {
     pub fn from_der_no_sub<R: Read>(mut pk_der: R) -> Result<PartialVapidSignatureBuilder, WebPushError> {
         let mut der_key: Vec<u8> = Vec::new();
         pk_der.read_to_end(&mut der_key)?;
+        let k = EcPrivateKey::try_from(der_key.as_slice()).map_err(|_| WebPushError::InvalidCryptoKeys)?;
 
         Ok(PartialVapidSignatureBuilder {
-            key: VapidKey::new(
-                ES256KeyPair::from_pem(
-                    &EcPrivateKey::try_from(der_key.as_slice())
-                        .map_err(|_| WebPushError::InvalidCryptoKeys)?
-                        .to_pem(sec1::LineEnding::CRLF).map_err(|_| WebPushError::InvalidCryptoKeys)?,
-                )
-                .map_err(|_| WebPushError::InvalidCryptoKeys)?,
-            ),
+            key: VapidKey::new(ES256KeyPair::from_bytes(k.private_key).map_err(|_| WebPushError::InvalidCryptoKeys)?),
         })
     }
 
@@ -230,11 +224,15 @@ impl<'a> VapidSignatureBuilder<'a> {
 
         //Handle each kind of PEM file differently, as EC keys can be in SEC1 or PKCS8 format.
         if label == "EC PRIVATE KEY" {
-            let key = EcPrivateKey::try_from(buffer.as_bytes())
-                .map_err(|_| WebPushError::InvalidCryptoKeys)?
-                .to_pem(sec1::LineEnding::CRLF)
-                .map_err(|_| WebPushError::InvalidCryptoKeys)?;
-            Ok(ES256KeyPair::from_pem(&key).map_err(|_| WebPushError::InvalidCryptoKeys)?)
+            // vendored from https://docs.rs/sec1/latest/src/sec1/traits.rs.html#36-41
+            let (label, doc) = SecretDocument::from_pem(&buffer).map_err(|_| WebPushError::InvalidCryptoKeys)?;
+
+            if label != EcPrivateKey::PEM_LABEL {
+                return Err(WebPushError::InvalidCryptoKeys);
+            }
+
+            let sec1 = EcPrivateKey::from_der(doc.as_bytes()).map_err(|_| WebPushError::InvalidCryptoKeys)?;
+            Ok(ES256KeyPair::from_bytes(sec1.private_key).map_err(|_| WebPushError::InvalidCryptoKeys)?)
         } else if label == "PRIVATE KEY" {
             Ok(ES256KeyPair::from_pem(&buffer).map_err(|_| WebPushError::InvalidCryptoKeys)?)
         } else {
